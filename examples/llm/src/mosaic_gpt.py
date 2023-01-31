@@ -245,6 +245,64 @@ class GPTBlock(nn.Module):
         x = x + self.resid_mlp_dropout(n)
         return x
 
+class ParallelGPTBlock(nn.Module):
+    def __init__(self,
+                 cfg: DictConfig,
+                 causal_attn_cls,
+                 device: Optional[str] = None):
+        super().__init__()
+        print ("using parallel gpt block")
+        del causal_attn_cls
+        if cfg.get('alibi', False):
+            assert cfg.attn_impl == 'triton', 'Only the triton kernel supports parallel attention and alibi'
+        
+        self.ln = nn.LayerNorm(cfg.d_model, device=device)
+        if cfg.attn_impl == 'triton':
+            try:
+                from examples.llm.src.flash_attention import FlashAttention # type: ignore
+            except ImportError as e:
+                raise e
+            
+            factory_kwargs = {'device': device, 'dtype': None}
+            self.causal_attn = FlashAttention(cfg.n_heads, softmax_scale=None, **factory_kwargs)
+        else:
+            raise ValueError(f'Unknown attn_impl={cfg.attn_impl}')
+        self.qkv_dim = 3 * cfg.d_model
+        self.mlp_int_dim = cfg.mlp_ratio * cfg.d_model
+
+        # Fused qkv weight, mlp encoding linear
+        self.Wqkv_mlp_up = nn.Linear(cfg.d_model, self.qkv_dim + self.mlp_int_dim, device=device)
+        self.mlp_act = nn.GELU(approximate='none')
+        self.mlp_down = nn.Linear(self.mlp_int_dim, cfg.d_model, device=device)
+        self.attn_out_proj = nn.Linear(cfg.d_model, cfg.d_model, **factory_kwargs)
+        self.resid_attn_dropout = nn.Dropout(cfg.resid_pdrop)
+        self.resid_mlp_dropout = nn.Dropout(cfg.resid_pdrop)
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        key_padding_mask: Optional[torch.ByteTensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        a = self.ln(x)
+        linear_enc = self.Wqkv_mlp_up(a) #fused input linear encoding, which gives most of the speedup
+
+        # split up activations properly
+        b = linear_enc[:, :, :self.mlp_int_dim] 
+        qkv = linear_enc[:, :, self.mlp_int_dim:]
+
+        # Multi-headed attention (MHA)
+        context, attn_weights = self.causal_attn(qkv, key_padding_mask=key_padding_mask, 
+                                                 attn_mask=attn_mask, is_causal=True, 
+                                                 need_weights=False, average_attn_weights=False)
+        attn_out = self.attn_out_proj(context)
+        attn_out = self.resid_attn_dropout(attn_out)
+
+        b = self.mlp_down(self.mlp_act(b))
+        b = self.resid_mlp_dropout(b)
+
+        return x + b + attn_out
+
 
 class MosaicGPT(nn.Module):
 
@@ -280,12 +338,17 @@ class MosaicGPT(nn.Module):
                                  device=cfg.device)
             })
         self.transformer.update({'emb_drop': nn.Dropout(cfg.emb_pdrop)})
+
+        gpt_block_cls = GPTBlock
+        if cfg.parallel_attn:
+            gpt_block_cls = ParallelGPTBlock
+
         self.transformer.update({
             'blocks':
                 nn.ModuleList([
-                    GPTBlock(cfg,
-                             causal_attn_cls=self.causal_attn_cls,
-                             device=cfg.device) for _ in range(cfg.n_layers)
+                    gpt_block_cls(cfg,
+                                  causal_attn_cls=self.causal_attn_cls,
+                                  device=cfg.device) for _ in range(cfg.n_layers)
                 ])
         })
         self.transformer.update(
@@ -339,7 +402,7 @@ class MosaicGPT(nn.Module):
             elif self.alibi:
                 # WARNING: Alibi with torch attn is not thoroughly tested
                 # torch mask is supposed to be of shape nzz x SeqLen x SeqLen
-                # we must braodcast to batch size then flatten batchsize * n_heads dim
+                # we must broadcast to batch size then flatten batchsize * n_heads dim
                 # Note: if key_padding_mask is triggered, the needed expansion is already done.
                 attn_mask = attn_mask.expand(batch_size, self.cfg.n_heads,
                                              seq_len, seq_len).reshape(
@@ -445,11 +508,11 @@ class MosaicGPT(nn.Module):
 
     # FSDP Wrap function
     def fsdp_wrap_fn(self, module):
-        return isinstance(module, GPTBlock)
+        return isinstance(module, (GPTBlock, ParallelGPTBlock))
 
     # Activation Checkpointing
     def activation_checkpointing_fn(self, module):
-        return isinstance(module, GPTBlock)
+        return isinstance(module, (GPTBlock, ParallelGPTBlock))
 
 
 class ComposerMosaicGPT(ComposerModel):
