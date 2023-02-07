@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from composer.metrics.nlp import LanguageCrossEntropy, Perplexity
 from composer.models.base import ComposerModel
 from omegaconf import DictConfig
+from einops import rearrange
 
 
 class TorchCausalAttention(nn.Module):
@@ -256,27 +257,47 @@ class ParallelGPTBlock(nn.Module):
         if cfg.get('alibi', False):
             assert cfg.attn_impl == 'triton', 'Only the triton kernel supports parallel attention and alibi'
         
+        self.attn_impl = cfg.attn_impl
+        self.fused_mlp = cfg.fused_mlp
+        self.qkv_dim = 3 * cfg.d_model
+        self.mlp_int_dim = cfg.mlp_ratio * cfg.d_model
+        self.n_heads = cfg.n_heads
+
         self.ln = nn.LayerNorm(cfg.d_model, device=device)
-        if cfg.attn_impl == 'triton':
+
+        factory_kwargs = {'device': device, 'dtype': None}
+        if self.attn_impl == 'triton':
             try:
                 from examples.llm.src.flash_attention import FlashAttention # type: ignore
             except ImportError as e:
                 raise e
             
-            factory_kwargs = {'device': device, 'dtype': None}
             self.causal_attn = FlashAttention(cfg.n_heads, softmax_scale=None, **factory_kwargs)
+        elif self.attn_impl == 'flash':
+            try:
+                from flash_attn.flash_attention import FlashAttention
+            except ImportError as e:
+                raise e
+            self.causal_attn = FlashAttention(attention_dropout=cfg.attn_pdrop, **factory_kwargs)
         else:
             raise ValueError(f'Unknown attn_impl={cfg.attn_impl}')
-        self.qkv_dim = 3 * cfg.d_model
-        self.mlp_int_dim = cfg.mlp_ratio * cfg.d_model
 
         # Fused qkv weight, mlp encoding linear
-        self.Wqkv_mlp_up = nn.Linear(cfg.d_model, self.qkv_dim + self.mlp_int_dim, device=device)
+        if self.fused_mlp:
+            print ("using fused MLP")
+            self.Wqkv_mlp_up = nn.Linear(cfg.d_model, self.qkv_dim + self.mlp_int_dim, **factory_kwargs)
+        else:
+            print ("using unfused MLP")
+            self.Wqkv = nn.Linear(cfg.d_model, self.qkv_dim, **factory_kwargs)
+            self.mlp_up = nn.Linear(cfg.d_model, self.mlp_int_dim, device=device)
         self.mlp_act = nn.GELU(approximate='none')
         self.mlp_down = nn.Linear(self.mlp_int_dim, cfg.d_model, device=device)
         self.attn_out_proj = nn.Linear(cfg.d_model, cfg.d_model, **factory_kwargs)
         self.resid_attn_dropout = nn.Dropout(cfg.resid_pdrop)
         self.resid_mlp_dropout = nn.Dropout(cfg.resid_pdrop)
+
+        self.mlp_down._is_residual = True
+        self.attn_out_proj._is_residual = True
     
     def forward(
         self,
@@ -285,21 +306,36 @@ class ParallelGPTBlock(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         a = self.ln(x)
-        linear_enc = self.Wqkv_mlp_up(a) #fused input linear encoding, which gives most of the speedup
+        
+        if self.fused_mlp:
+            linear_enc = self.Wqkv_mlp_up(a) #fused input linear encoding, which gives most of the speedup
 
-        # split up activations properly
-        b = linear_enc[:, :, :self.mlp_int_dim] 
-        qkv = linear_enc[:, :, self.mlp_int_dim:]
-
-        # Multi-headed attention (MHA)
-        context, attn_weights = self.causal_attn(qkv, key_padding_mask=key_padding_mask, 
-                                                 attn_mask=attn_mask, is_causal=True, 
-                                                 need_weights=False, average_attn_weights=False)
-        attn_out = self.attn_out_proj(context)
-        attn_out = self.resid_attn_dropout(attn_out)
+            # split up activations properly
+            b = linear_enc[..., :self.mlp_int_dim] 
+            qkv = linear_enc[..., self.mlp_int_dim:]
+        else:
+            qkv = self.Wqkv(a)
+            b = self.mlp_up(a)
 
         b = self.mlp_down(self.mlp_act(b))
         b = self.resid_mlp_dropout(b)
+
+        # Multi-headed attention (MHA)
+        attn_kwargs = {'key_padding_mask': key_padding_mask, 
+                       'need_weights': False}
+        if self.attn_impl == 'flash':
+            qkv = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3, h=self.n_heads)
+            attn_kwargs['causal'] = True
+        elif self.attn_impl == 'triton': 
+            attn_kwargs['average_attn_weights'] = False
+            attn_kwargs['attn_mask'] = attn_mask
+            attn_kwargs['is_causal'] = True
+
+        context, _ = self.causal_attn(qkv, **attn_kwargs)
+        if self.attn_impl == 'flash':
+            context = rearrange(context, 'b s h d -> b s (h d)')
+        attn_out = self.attn_out_proj(context)
+        attn_out = self.resid_attn_dropout(attn_out)
 
         return x + b + attn_out
 
@@ -341,6 +377,7 @@ class MosaicGPT(nn.Module):
 
         gpt_block_cls = GPTBlock
         if cfg.parallel_attn:
+            print ("using parallel attn block")
             gpt_block_cls = ParallelGPTBlock
 
         self.transformer.update({
