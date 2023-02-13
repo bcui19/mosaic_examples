@@ -259,13 +259,22 @@ class ParallelGPTBlock(nn.Module):
         
         self.attn_impl = cfg.attn_impl
         self.fused_mlp = cfg.fused_mlp
+        self.hid_dim = cfg.d_model
         self.qkv_dim = 3 * cfg.d_model
         self.mlp_int_dim = cfg.mlp_ratio * cfg.d_model
         self.n_heads = cfg.n_heads
 
         self.ln = nn.LayerNorm(cfg.d_model, device=device)
 
+        self.attn_layernorm = cfg.get('attn_layernorm', False)
+
         factory_kwargs = {'device': device, 'dtype': None}
+
+
+        if self.attn_layernorm:
+            self.q_ln = nn.LayerNorm(cfg.d_model, **factory_kwargs)
+            self.k_ln = nn.LayerNorm(cfg.d_model, **factory_kwargs)
+
         if self.attn_impl == 'triton':
             try:
                 from examples.llm.src.flash_attention import FlashAttention # type: ignore
@@ -316,6 +325,16 @@ class ParallelGPTBlock(nn.Module):
         else:
             qkv = self.Wqkv(a)
             b = self.mlp_up(a)
+
+        if self.attn_layernorm:
+            qkv_dtype = qkv.dtype
+            # print ("qkv shape is: ", qkv.shape, qkv.dtype)
+            q, k, v = qkv.split(self.hid_dim, dim=2)
+            q = self.q_ln(q).to(qkv_dtype)
+            k = self.k_ln(k).to(qkv_dtype)
+            # print ("q, k dtypes are: ", q.dtype, k.dtype)
+            qkv = torch.cat([q, k, v], dim=2)
+
 
         b = self.mlp_down(self.mlp_act(b))
         b = self.resid_mlp_dropout(b)
