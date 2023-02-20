@@ -9,7 +9,7 @@ from composer.core import Evaluator
 from composer.datasets.in_context_learning_evaluation import \
     get_icl_task_dataloader
 from composer.loggers import WandBLogger
-from composer.optim import DecoupledAdamW
+from composer.optim import DecoupledAdamW, DecoupledSGDW
 from composer.optim.scheduler import (ConstantWithWarmupScheduler,
                                       CosineAnnealingWithWarmupScheduler,
                                       LinearWithWarmupScheduler)
@@ -63,6 +63,10 @@ def build_optimizer(cfg, model):
                               betas=cfg.betas,
                               eps=cfg.eps,
                               weight_decay=cfg.weight_decay)
+    elif cfg.name == 'decoupled_sgd':
+        return DecoupledSGDW(model.parameters(),
+                             lr=cfg.lr,
+                             momentum=cfg.momentum)
     else:
         raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
 
