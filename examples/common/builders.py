@@ -14,6 +14,7 @@ from composer.optim.scheduler import (ConstantWithWarmupScheduler,
                                       CosineAnnealingWithWarmupScheduler,
                                       LinearWithWarmupScheduler)
 
+from lion_pytorch import Lion
 from examples.common.speed_monitor_w_mfu import SpeedMonitorMFU
 from examples.common.text_data import build_text_dataloader
 
@@ -68,6 +69,9 @@ def build_optimizer(cfg, model):
                              lr=cfg.lr,
                              momentum=cfg.momentum,
                              weight_decay=cfg.weight_decay)
+    elif cfg.name == 'lion':
+        return Lion(model.parameters(),
+                              lr=cfg.lr)
     else:
         raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
 
