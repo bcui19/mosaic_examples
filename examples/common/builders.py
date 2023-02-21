@@ -66,7 +66,8 @@ def build_optimizer(cfg, model):
     elif cfg.name == 'decoupled_sgd':
         return DecoupledSGDW(model.parameters(),
                              lr=cfg.lr,
-                             momentum=cfg.momentum)
+                             momentum=cfg.momentum,
+                             weight_decay=cfg.weight_decay)
     else:
         raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
 
