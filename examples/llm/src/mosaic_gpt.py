@@ -14,6 +14,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import apex
 from composer.metrics import METRIC_DEFAULT_CTORS, InContextLearningMetric
 from composer.metrics.nlp import LanguageCrossEntropy, Perplexity
 from composer.models.base import ComposerModel
@@ -97,6 +98,7 @@ class FlashCausalAttention(nn.Module):
         self.n_heads = cfg.n_heads
 
         if self.attn_qk_ln:
+            self.low_precision_ln = cfg.get('low_precision_ln')
             self.W_qkv = nn.Linear(self.d_model,
                                    3 * self.d_model,
                                    bias=True,
@@ -110,8 +112,13 @@ class FlashCausalAttention(nn.Module):
 
             self.out_proj._is_residual = True  # type: ignore
 
-            self.q_ln = nn.LayerNorm(self.d_model, device=device)
-            self.k_ln = nn.LayerNorm(self.d_model, device=device)
+            if self.low_precision_ln:
+                print ("using low precision ln")
+                self.q_ln = apex.normalization.FusedLayerNorm(self.d_model)
+                self.k_ln = apex.normalization.FusedLayerNorm(self.d_model)
+            else:
+                self.q_ln = nn.LayerNorm(self.d_model, device=device)
+                self.k_ln = nn.LayerNorm(self.d_model, device=device)
         else:
             self.mhsa = FlashMHA(
                 embed_dim=cfg.d_model,
