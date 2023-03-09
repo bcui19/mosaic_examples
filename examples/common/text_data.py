@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 import transformers
+import atexit
 from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
 from streaming import StreamingDataset
@@ -166,7 +167,7 @@ def build_text_dataloader(cfg: DictConfig, device_batch_size: int):
         mlm=mlm_probability is not None,
         mlm_probability=mlm_probability)
 
-    return DataLoader(
+    dataloader = DataLoader(
         dataset,
         collate_fn=collate_fn,
         batch_size=device_batch_size,
@@ -177,6 +178,16 @@ def build_text_dataloader(cfg: DictConfig, device_batch_size: int):
         persistent_workers=cfg.get('persistent_workers', True),
         timeout=cfg.get('timeout', 0),
     )
+
+    print ("before atexit")
+    atexit.register(cleanup_dataloader_child_processes, (dataloader,))
+    print ("after atexit")
+    return dataloader
+
+def cleanup_dataloader_child_processes(dataloader):
+    print ("in cleanup dataloader child processes")
+    for worker in dataloader._workers:
+        worker.terminate()
 
 
 # Helpful to test if your dataloader is working locally
