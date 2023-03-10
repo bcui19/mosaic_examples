@@ -179,16 +179,7 @@ def build_text_dataloader(cfg: DictConfig, device_batch_size: int):
         timeout=cfg.get('timeout', 0),
     )
 
-    print ("before atexit")
-    atexit.register(cleanup_dataloader_child_processes, (dataloader,))
-    print ("after atexit")
     return dataloader
-
-def cleanup_dataloader_child_processes(dataloader):
-    print ("in cleanup dataloader child processes")
-    for worker in dataloader._workers:
-        worker.terminate()
-
 
 # Helpful to test if your dataloader is working locally
 # Run `python data.py  --local_path [local] [--remote_path remote, optional]` and verify that batches are printed out
