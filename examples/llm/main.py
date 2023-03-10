@@ -87,7 +87,7 @@ def main(cfg):
 
     reproducibility.seed_all(cfg.seed)
     print ("before dist")
-    dist.initialize_dist(get_device(None), timeout=5)
+    dist.initialize_dist(get_device(None), timeout=7200)
     print ("after dist")
 
     # Run Name
