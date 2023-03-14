@@ -6,7 +6,7 @@ import os
 from composer import algorithms
 from composer.callbacks import (HealthChecker, LRMonitor, MemoryMonitor,
                                 OptimizerMonitor, RuntimeEstimator,
-                                SpeedMonitor)
+                                SpeedMonitor, ActivationMonitor)
 from composer.core import Evaluator
 from composer.datasets.in_context_learning_evaluation import \
     get_icl_task_dataloader
@@ -36,6 +36,8 @@ def build_callback(name, kwargs):
             'log_optimizer_metrics', True),)
     elif name == 'health_checker':
         return HealthChecker(**kwargs)
+    elif name == 'activation_monitor':
+        return ActivationMonitor(**kwargs)
     else:
         raise ValueError(f'Not sure how to build callback: {name}')
 
