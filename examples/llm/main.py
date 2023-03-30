@@ -59,6 +59,7 @@ def build_composer_model(model_cfg, tokenizer_cfg):
         action='ignore',
         message='Torchmetrics v0.9 introduced a new argument class property')
     try:
+        print('model cfg is: ', model_cfg)
         return COMPOSER_MODEL_REGISTRY[model_cfg.name](model_cfg, tokenizer_cfg)
     except:
         raise ValueError(
