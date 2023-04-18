@@ -119,8 +119,11 @@ def build_finetuning_dataloader(cfg: DictConfig,
         if tokenizer.pad_token is None:  # type: ignore
             tokenizer.pad_token = tokenizer.eos_token
 
-        dataset = dataset_constructor.build(cfg.dataset.name, tokenizer,
-                                            cfg.dataset.split)
+        dataset = dataset_constructor.build(cfg.dataset.name,
+                                            tokenizer,
+                                            cfg.dataset.split,
+                                            data_dir=cfg.dataset.get(
+                                                'data_dir', None))
 
         collate_fn = Seq2SeqFinetuningCollator(
             tokenizer,
@@ -177,6 +180,12 @@ if __name__ == '__main__':
             'name': 'tatsu-lab/alpaca',
             'split': 'train',
             'packing_ratio': 18.0,
+
+            # 'name': 'Anthropic/hh-rlhf',
+            # 'split': 'train',
+            # 'packing_ratio': 5.0,
+            # 'data_dir': 'helpful-online',
+
             #
             # 'name': 'Muennighoff/P3',
             # 'split': 'validation',

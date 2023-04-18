@@ -135,20 +135,31 @@ class DatasetConstructor:
 
         return wrapper
 
-    def build(self, dataset_name: str, tokenizer: Tokenizer, split: str):
+    def build(self, dataset_name: str, tokenizer: Tokenizer, split: str,
+              data_dir: Optional[str]):
         assert dataset_name in self._task_tokenization_registry
         # UPDATE THIS LINE TO LOAD YOUR RAW DATASET
-        dataset = datasets.load_dataset(dataset_name, split=split)
+        dataset = datasets.load_dataset(dataset_name,
+                                        split=split,
+                                        data_dir=data_dir)
 
         tokenize_function = partial(
             self._task_tokenization_registry[dataset_name], tokenizer=tokenizer)
 
         columns_to_remove = list(dataset[0].keys())
-        dataset = dataset.map(
-            tokenize_function,
-            batched=False,
-            remove_columns=columns_to_remove,
-        )
+        if dataset_name == 'Anthropic/hh-rlhf':
+            dataset = dataset.map(
+                tokenize_function,
+                batched=True,
+                batch_size=1,
+                remove_columns=['chosen', 'rejected'],
+            )
+        else:
+            dataset = dataset.map(
+                tokenize_function,
+                batched=False,
+                remove_columns=columns_to_remove,
+            )
         return dataset
 
     def build_from_streaming(self, dataset_name: str, tokenizer_name: str,
@@ -182,6 +193,47 @@ def alpaca_tokenize_function(inp: Dict, tokenizer: Tokenizer):
         text=prompt + '### Response:',
         text_target=response,
     )
+
+
+@dataset_constructor.register('Anthropic/hh-rlhf')
+def anthropic__hh_tokenize_function(inp: Dict, tokenizer: Tokenizer):
+    """Splits n-turn example into n examples."""
+    HUMAN_SPLIT_STR = '\n\nHuman:'
+    AI_SPLIT_STR = '\n\nAssistant:'
+
+    tokenized_batches = []
+
+    try:
+        chosen = inp['chosen']
+        assert len(chosen) == 1
+        chosen = chosen[0]
+
+        turn_splits = chosen.split(HUMAN_SPLIT_STR)
+        n_turns = len(turn_splits) - 1
+        chosens = []
+        for i in range(2, n_turns + 2):
+            # Get the current split of human vs AI response
+            curr_turn = HUMAN_SPLIT_STR.join(turn_splits[:i])
+            curr_turn_ai_split = curr_turn.split(AI_SPLIT_STR)
+
+            tokenized = tokenizer(
+                text=AI_SPLIT_STR.join(curr_turn_ai_split[:-1]) + AI_SPLIT_STR,
+                text_target=curr_turn_ai_split[-1])
+
+            tokenized_batches.append(tokenized)
+
+        result = {}
+        for key in tokenized_batches[0].keys():
+            curr_val = []
+            for tokenized_batch in tokenized_batches:
+                curr_val.append(tokenized_batch[key])
+            result[key] = curr_val
+
+    except:
+        print(inp)
+        raise
+
+    return result
 
 
 @dataset_constructor.register('HuggingFaceH4/databricks_dolly_15k')
