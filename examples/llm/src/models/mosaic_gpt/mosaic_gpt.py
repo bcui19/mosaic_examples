@@ -81,7 +81,7 @@ class MosaicGPT(PreTrainedModel):
                 ])
         })
         self.transformer.update(
-            {'norm_f': norm_class(config.d_model, device=config.init_device)})
+            {'ln_f': norm_class(config.d_model, device=config.init_device)})
 
         # enables scaling output logits; similar to a softmax "temperature"
         # PaLM paper uses scale 1/sqrt(config.d_model)
@@ -375,7 +375,7 @@ class MosaicGPT(PreTrainedModel):
             if past_key_values is not None:
                 past_key_values[b_idx] = past_key_value
 
-        x = self.transformer.norm_f(x)  # type: ignore
+        x = self.transformer.ln_f(x)  # type: ignore
 
         if self.output_vocab:
             # output embedding weight tied to input embedding
