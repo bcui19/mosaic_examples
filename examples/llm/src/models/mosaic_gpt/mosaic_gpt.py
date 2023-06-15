@@ -363,6 +363,9 @@ class MosaicGPT(PreTrainedModel):
 
         x = self.transformer.ln_f(x)  # type: ignore
 
+        if output_hidden_states:
+            all_hidden_states = all_hidden_states + (x,)
+
         # output embedding weight tied to input embedding
         assert isinstance(self.transformer.wte, nn.Module)  # pyright
         assert isinstance(self.transformer.wte.weight, torch.Tensor)  # pyright
